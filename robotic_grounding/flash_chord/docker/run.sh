@@ -123,6 +123,9 @@ case "${CMD}" in
             # owned by you, not root. A per-container passwd/group gives that UID a
             # name. No secrets are written; /etc/shadow is never mounted.
             HOST_UID="$(id -u)"; HOST_GID="$(id -g)"
+            if docker info -f '{{.SecurityOptions}}' 2>/dev/null | grep -q rootless; then
+                HOST_UID=0; HOST_GID=0   # rootless: container root == host user
+            fi
             XHOST_USER="$(id -un)"
             HOST_USER="${XHOST_USER}"; HOST_GROUP="$(id -gn)"
             [[ "${HOST_USER}" =~ ^[a-z_][a-z0-9_-]*$ ]] || HOST_USER="user"
@@ -178,6 +181,7 @@ case "${CMD}" in
                 "${WANDB_ENV[@]}" \
                 "${V2D_ASSETS_MOUNT[@]}" \
                 -v "${REPO_ROOT}:/workspace" \
+                -v /localscratch/wangti98:/localscratch/wangti98 \
                 -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
                 -v "${IDMAP_DIR}/passwd:/etc/passwd:ro" \
                 -v "${IDMAP_DIR}/group:/etc/group:ro" \
