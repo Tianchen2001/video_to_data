@@ -36,8 +36,9 @@ RECON_BODY_OBJECTIVE_TERM_NAMES = (
     "palm_position",
     "palm_orientation",
     "force_closure",
+    "object_orientation",
 )
-_RECON_BODY_OBJECTIVE_TERM_COUNT = wp.constant(12)
+_RECON_BODY_OBJECTIVE_TERM_COUNT = wp.constant(13)
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,8 @@ class ReconBodyObjectiveConfig:
     pelvis_orientation_std: float = 0.4
     body_joint_position_std: float = 1.0
     object_position_std: float = 0.2
+    object_orientation_weight: float = 0.0  # training-only, 0 = recipe objective
+    object_orientation_std: float = 0.5  # rad, training-only
     palm_position_std: float = 0.2
     palm_orientation_std: float = 0.4
     soft_joint_limit_factor: float = 0.9
@@ -118,6 +121,7 @@ class ReconBodyObjectiveConfig:
             self.palm_position_weight,
             self.palm_orientation_weight,
             self.force_closure_weight,
+            self.object_orientation_weight,
         )
 
     def build(
@@ -208,6 +212,7 @@ def compose_recon_body_objective(
     soft_upper: wp.array(dtype=wp.float32),
     object_body_id: int,
     object_target_pos_w: wp.array(dtype=wp.vec3),
+    object_target_quat_w: wp.array(dtype=wp.quat),
     pelvis_body_id: int,
     num_frames: int,
     bodies_per_world: int,
@@ -220,6 +225,7 @@ def compose_recon_body_objective(
     object_position_std: float,
     palm_position_std: float,
     palm_orientation_std: float,
+    object_orientation_std: float,
     weights: wp.array(dtype=wp.float32),
     frame_dt: float,
     terms: wp.array(dtype=wp.float32),
@@ -303,6 +309,11 @@ def compose_recon_body_objective(
     terms[term_base + 9] = wp.exp(-palm_position_sse / (palm_position_std * palm_position_std))
     terms[term_base + 10] = wp.exp(-palm_orientation_sse / (palm_orientation_std * palm_orientation_std))
     terms[term_base + 11] = force_closure[world]
+    object_orientation = wp.normalize(wp.transform_get_rotation(body_q[body_base + object_body_id]))
+    object_orientation_error = quat_geodesic_angle(object_orientation, wp.normalize(object_target_quat_w[world]))
+    terms[term_base + 12] = wp.exp(
+        -(object_orientation_error * object_orientation_error) / (object_orientation_std * object_orientation_std)
+    )
 
     total = float(0.0)  # noqa: UP018
     for term in range(_RECON_BODY_OBJECTIVE_TERM_COUNT):
@@ -465,6 +476,8 @@ class ReconBodyObjective:
         return RECON_BODY_OBJECTIVE_TERM_NAMES
 
     def set_weights(self, weights: Mapping[str, float]) -> None:
+        if "object_orientation" not in weights:  # recipe curricula predate the term: keep the config weight
+            weights = {**weights, "object_orientation": self.config.object_orientation_weight}
         if set(weights) != set(self.term_names):
             raise ValueError(
                 f"ReconBody objective weights must contain exactly {self.term_names}, got {tuple(weights)}"
@@ -540,6 +553,7 @@ class ReconBodyObjective:
                 self.soft_upper,
                 self.object_body_id,
                 self.command.body_target_pos_w,
+                self.command.body_target_quat_w,
                 self.pelvis_body_id,
                 self.num_frames,
                 self.bodies_per_world,
@@ -552,6 +566,7 @@ class ReconBodyObjective:
                 self.config.object_position_std,
                 self.config.palm_position_std,
                 self.config.palm_orientation_std,
+                self.config.object_orientation_std,
                 self.weights,
                 self.frame_dt,
             ],
